@@ -52,7 +52,8 @@ static struct page_table_t * get_page_table(
 
 	int i;
 	for (i = 0; i < seg_table->size; i++) {
-		// Enter your code here
+		if (seg_table->table->v_index == index) 
+			return seg_table->table->pages;
 	}
 	return NULL;
 
@@ -87,6 +88,7 @@ static int translate(
 			 * to [p_index] field of page_table->table[i] to 
 			 * produce the correct physical address and save it to
 			 * [*physical_addr]  */
+			*physical_addr = ((page_table->table[i].p_index) << OFFSET_LEN) + offset;
 			return 1;
 		}
 	}
@@ -113,6 +115,18 @@ addr_t alloc_mem(uint32_t size, struct pcb_t * proc) {
 	 * to know whether this page has been used by a process.
 	 * For virtual memory space, check bp (break pointer).
 	 * */
+	int i, num_of_freePageAvail = 0;
+	for (i = 0; i < NUM_PAGES; i++)
+	{
+		if(_mem_stat->proc) num_of_freePageAvail++;
+		if (num_of_freePageAvail == num_pages) 
+		{
+			mem_avail = 1;
+			break;
+		}
+	}
+	if (num_pages > NUM_PAGES) mem_avail = 0;
+	
 	
 	if (mem_avail) {
 		/* We could allocate new memory region to the process */
