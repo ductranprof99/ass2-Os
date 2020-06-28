@@ -52,8 +52,10 @@ static struct page_table_t * get_page_table(
 
 	int i;
 	for (i = 0; i < seg_table->size; i++) {
-		if (seg_table->table->v_index == index) 
-			return seg_table->table->pages;
+		// Enter your code here
+		if(seg_table->table[i].v_index==index){
+			return seg_table->table[i].pages;
+		}
 	}
 	return NULL;
 
@@ -88,14 +90,14 @@ static int translate(
 			 * to [p_index] field of page_table->table[i] to 
 			 * produce the correct physical address and save it to
 			 * [*physical_addr]  */
-			*physical_addr = ((page_table->table[i].p_index) << OFFSET_LEN) + offset;
+			*physical_addr=(page_table->table[i].p_index<<OFFSET_LEN)+offset;
 			return 1;
 		}
 	}
 	return 0;	
 }
 
-addr_t alloc_mem(uint32_t size, struct pcb_t * proc) {
+addr_t alloc_mem(uint32_t size, struct pcb_t *proc) {
 	pthread_mutex_lock(&mem_lock);
 	addr_t ret_mem = 0;
 	/* TODO: Allocate [size] byte in the memory for the
@@ -103,8 +105,7 @@ addr_t alloc_mem(uint32_t size, struct pcb_t * proc) {
 	 * byte in the allocated memory region to [ret_mem].
 	 * */
 
-	uint32_t num_pages = (size % PAGE_SIZE) ? size / PAGE_SIZE :
-		size / PAGE_SIZE + 1; // Number of pages we will use
+	uint32_t num_pages = (size % PAGE_SIZE==0) ? size / PAGE_SIZE : size / PAGE_SIZE + 1; // Number of pages we will use
 	int mem_avail = 0; // We could allocate new memory region or not?
 
 	/* First we must check if the amount of free memory in
@@ -115,19 +116,23 @@ addr_t alloc_mem(uint32_t size, struct pcb_t * proc) {
 	 * to know whether this page has been used by a process.
 	 * For virtual memory space, check bp (break pointer).
 	 * */
-	int i, num_of_freePageAvail = 0;
-	for (i = 0; i < NUM_PAGES; i++)
-	{
-		if(_mem_stat->proc) num_of_freePageAvail++;
-		if (num_of_freePageAvail == num_pages) 
-		{
-			mem_avail = 1;
-			break;
+	//check if the number of free page enough to allocate
+	int free_page = 0;
+	int i=0;
+	while((free_page < num_pages) && (i < NUM_PAGES)){
+		if(_mem_stat[i].proc == 0){
+			free_page++;
 		}
+		i++;
 	}
-	if (num_pages > NUM_PAGES) mem_avail = 0;
-	
-	
+	if(free_page == num_pages){
+		mem_avail=1;
+	}
+
+	//check bp (break pointer)
+	if(proc->bp+num_pages*PAGE_SIZE > (1<<ADDRESS_SIZE)){
+		mem_avail=0;
+	}
 	if (mem_avail) {
 		/* We could allocate new memory region to the process */
 		ret_mem = proc->bp;
@@ -138,6 +143,70 @@ addr_t alloc_mem(uint32_t size, struct pcb_t * proc) {
 		 * 	- Add entries to segment table page tables of [proc]
 		 * 	  to ensure accesses to allocated memory slot is
 		 * 	  valid. */
+		uint32_t temp_numpages = 0;
+		uint32_t j = 0;
+		uint32_t pre_page = -1;
+		uint32_t first_page = -1;
+		while (temp_numpages < num_pages)
+		{
+			if(_mem_stat[j].proc==0){
+				//free page
+				if(pre_page!=-1){
+					_mem_stat[pre_page].next=j;
+				}
+				else{
+					first_page=j; //first page be allocated
+				}
+				_mem_stat[j].proc=proc->pid;
+				_mem_stat[j].index=temp_numpages; //update index of the page
+				temp_numpages++;
+				pre_page=j;
+			}
+			j++;
+		}
+		//update 'next' in the last page
+		_mem_stat[pre_page].next=-1;
+
+		//update segs_table and pages_table
+		temp_numpages=0;
+		addr_t old_bp=ret_mem;
+		int segSize;
+		int pageSize;
+		while (temp_numpages<num_pages)
+		{
+			//fisrt segment
+			if(proc->seg_table->size==0){
+				proc->seg_table->size++;
+			}
+			segSize=proc->seg_table->size;
+			
+			//check if the page hasn't been allocated
+			if(proc->seg_table->table[segSize-1].pages==NULL){
+				proc->seg_table->table[segSize-1].pages=malloc(sizeof(struct page_table_t));
+				proc->seg_table->table[segSize-1].pages->size=0;
+			}
+			
+			proc->seg_table->table[segSize-1].pages->size++;
+			pageSize=proc->seg_table->table[segSize-1].pages->size;
+
+			//check if the number of page of segment exceeded 2^5
+			if(pageSize > (1<<PAGE_LEN)){
+				proc->seg_table->size++;
+				proc->seg_table->table[segSize-1].pages->size--;
+			}
+			else {
+				//start update p_index and v_index
+				proc->seg_table->table[segSize-1].v_index = segSize-1;
+				proc->seg_table->table[segSize-1].pages->table[pageSize-1].v_index=get_second_lv(old_bp);
+				proc->seg_table->table[segSize-1].pages->table[pageSize-1].p_index=first_page;
+				
+				//go to next page
+				first_page=_mem_stat[first_page].next;
+				temp_numpages++;
+				old_bp=old_bp+PAGE_SIZE;
+			}
+		}
+		
 	}
 	pthread_mutex_unlock(&mem_lock);
 	return ret_mem;
@@ -152,6 +221,49 @@ int free_mem(addr_t address, struct pcb_t * proc) {
 	 * 	  the process [proc].
 	 * 	- Remember to use lock to protect the memory from other
 	 * 	  processes.  */
+	pthread_mutex_lock(&mem_lock);
+    addr_t physical_addr;
+    int num_pages=0;
+    int i;
+    if(translate(address,&physical_addr,proc)){
+        addr_t physical_page=physical_addr>>OFFSET_LEN;
+
+        //count the mount of page need to be deallocated and set flag [proc] of physical page
+        while(physical_page!=-1){
+            _mem_stat[physical_page].proc=0;
+            physical_page=_mem_stat[physical_page].next;
+            num_pages++;
+        }
+
+		//Remove unused entries in segment table and page tables 
+        addr_t virtual_addr=address;
+        while(num_pages!=0){
+            addr_t first_lv = get_first_lv(virtual_addr);
+            addr_t second_lv = get_second_lv(virtual_addr);
+
+            struct page_table_t * page_table = NULL;
+            page_table = get_page_table(first_lv, proc->seg_table);
+
+            //update v_index and p_index value to -1
+            if(page_table!=NULL){
+                for(i=0;i<(1 << PAGE_LEN);i++){
+                    if(second_lv==page_table->table[i].v_index){
+                        page_table->table[i].v_index=-1;
+                        page_table->table[i].p_index=-1;
+
+						//go to next page
+                        virtual_addr=virtual_addr+PAGE_SIZE;
+                        num_pages--;
+                        break;
+                    }
+                }
+            }else{
+				//next segment
+                virtual_addr=virtual_addr+PAGE_SIZE;
+            }
+        }
+    }
+    pthread_mutex_unlock(&mem_lock);
 	return 0;
 }
 
