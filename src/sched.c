@@ -29,7 +29,7 @@ struct pcb_t * get_proc(void) {
 	}
 
 	//gets PCB of a process waiting at ready queue
-	if(!empty(&ready_queue)){
+	if(ready_queue.size>0){
 		pthread_mutex_lock(&queue_lock);
 		proc=dequeue(&ready_queue);
 		pthread_mutex_unlock(&queue_lock);
@@ -37,8 +37,8 @@ struct pcb_t * get_proc(void) {
 	else 
 	{
 		//move all PCBs of processes waiting at run queue back to ready queue
-		int k;
-		for( k=0;k<run_queue.size;k++)
+		
+		for(;run_queue.size>0;)
 		{
 			pthread_mutex_lock(&queue_lock);
 			enqueue(&ready_queue, dequeue(&run_queue));
